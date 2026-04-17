@@ -26,7 +26,7 @@ pub use tauri_runtime_wry::NewWindowOpener as WryWindowOpener;
 
 #[cfg(feature = "cef")]
 use crate::CefDevToolsProtocol;
-pub use tauri_runtime::webview::{NewWindowFeatures, PageLoadEvent, ScrollBarStyle};
+pub use tauri_runtime::webview::{NewWindowFeatures, NotificationPayload, PageLoadEvent, ScrollBarStyle};
 // Remove this re-export in v3
 pub use tauri_runtime::Cookie;
 use tauri_runtime::{
@@ -75,6 +75,7 @@ pub(crate) type OnPageLoad<R> = dyn Fn(Webview<R>, PageLoadPayload<'_>) + Send +
 pub(crate) type OnDocumentTitleChanged<R> = dyn Fn(Webview<R>, String) + Send + 'static;
 pub(crate) type OnAddressChanged<R> = dyn Fn(Webview<R>, &Url) + Send + Sync + 'static;
 pub(crate) type DownloadHandler<R> = dyn Fn(Webview<R>, DownloadEvent<'_>) -> bool + Send + Sync;
+pub(crate) type NotificationHandler<R> = dyn Fn(Webview<R>, NotificationPayload) + Send + Sync;
 
 #[derive(Clone, Serialize)]
 pub(crate) struct CreatedEvent {
@@ -291,6 +292,7 @@ unstable_struct!(
     pub(crate) document_title_changed_handler: Option<Box<OnDocumentTitleChanged<R>>>,
     pub(crate) address_changed_handler: Option<Box<OnAddressChanged<R>>>,
     pub(crate) download_handler: Option<Arc<DownloadHandler<R>>>,
+    pub(crate) notification_handler: Option<Arc<NotificationHandler<R>>>,
   }
 );
 
@@ -386,6 +388,7 @@ async fn create_window(app: tauri::AppHandle) {
       document_title_changed_handler: None,
       address_changed_handler: None,
       download_handler: None,
+      notification_handler: None,
     }
   }
 
@@ -468,6 +471,7 @@ async fn create_window(app: tauri::AppHandle) {
       document_title_changed_handler: None,
       address_changed_handler: None,
       download_handler: None,
+      notification_handler: None,
     }
   }
 
@@ -700,6 +704,20 @@ tauri::Builder::<tauri::Wry>::new()
     self
   }
 
+  /// Register a callback fired in the browser process whenever a page invokes
+  /// the Web Notification API (`new Notification(...)` or
+  /// `ServiceWorkerRegistration.prototype.showNotification`). The page's
+  /// JavaScript sees a native `Notification` constructor — no JS is injected.
+  ///
+  /// Currently only implemented for the CEF runtime (`feature = "cef"`).
+  pub fn on_notification<F: Fn(Webview<R>, NotificationPayload) + Send + Sync + 'static>(
+    mut self,
+    f: F,
+  ) -> Self {
+    self.notification_handler.replace(Arc::new(f));
+    self
+  }
+
   /// Defines a closure to be executed when a page load event is triggered.
   /// The event can be either [`PageLoadEvent::Started`] if the page has started loading
   /// or [`PageLoadEvent::Finished`] when the page finishes loading.
@@ -841,6 +859,18 @@ tauri::Builder::<tauri::Wry>::new()
           false
         }
       }));
+    }
+
+    if let Some(notification_handler) = self.notification_handler.take() {
+      let label = pending.label.clone();
+      let manager = manager.manager_owned();
+      pending
+        .notification_handler
+        .replace(Arc::new(move |payload| {
+          if let Some(w) = manager.get_webview(&label) {
+            notification_handler(w, payload);
+          }
+        }));
     }
 
     let label_ = pending.label.clone();
