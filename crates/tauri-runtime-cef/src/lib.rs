@@ -49,6 +49,7 @@ use crate::cef_webview::CefWebview;
 
 mod cef_impl;
 mod cef_webview;
+mod render_process_handler;
 mod utils;
 
 type DevToolsProtocolHandler = dyn Fn(DevToolsProtocol) + Send + Sync;
@@ -2103,9 +2104,10 @@ pub fn run_cef_helper_process() {
     loader
   };
 
+  let mut app = render_process_handler::RenderApp::new();
   cef::execute_process(
     Some(args.as_main_args()),
-    None::<&mut cef::App>,
+    Some(&mut app),
     std::ptr::null_mut(),
   );
 }
