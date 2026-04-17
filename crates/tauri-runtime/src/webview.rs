@@ -44,6 +44,26 @@ pub type AddressChangedHandler = dyn Fn(&Url) + Send + Sync + 'static;
 
 pub type DownloadHandler = dyn Fn(DownloadEvent) -> bool + Send + Sync;
 
+/// Payload captured when a page invokes the Web Notification API.
+#[derive(Debug, Clone)]
+pub struct NotificationPayload {
+  /// Notification title (first argument to `new Notification(title, options)`).
+  pub title: String,
+  /// The `body` field from the options dictionary, if provided.
+  pub body: Option<String>,
+  /// The `icon` field from the options dictionary, if provided.
+  pub icon: Option<String>,
+  /// The `tag` field from the options dictionary, if provided.
+  pub tag: Option<String>,
+  /// Origin (scheme://host[:port]) of the frame that created the notification.
+  pub origin: String,
+  /// Full URL of the frame that created the notification.
+  pub frame_url: String,
+}
+
+/// Callback fired in the browser process whenever a page calls `new Notification(...)`.
+pub type NotificationHandler = dyn Fn(NotificationPayload) + Send + Sync + 'static;
+
 #[cfg(target_os = "ios")]
 type InputAccessoryViewBuilderFn = dyn Fn(&objc2_ui_kit::UIView) -> Option<objc2::rc::Retained<objc2_ui_kit::UIView>>
   + Send
@@ -207,6 +227,10 @@ pub struct PendingWebview<T: UserEvent, R: Runtime<T>> {
   pub on_page_load_handler: Option<Box<OnPageLoadHandler>>,
 
   pub download_handler: Option<Arc<DownloadHandler>>,
+
+  /// Observer invoked in the browser process when a page calls `new Notification(...)`.
+  /// Installed natively via the CEF render-process V8 hook, not via injected JavaScript.
+  pub notification_handler: Option<Arc<NotificationHandler>>,
 }
 
 impl<T: UserEvent, R: Runtime<T>> PendingWebview<T, R> {
@@ -237,6 +261,7 @@ impl<T: UserEvent, R: Runtime<T>> PendingWebview<T, R> {
         web_resource_request_handler: None,
         on_page_load_handler: None,
         download_handler: None,
+        notification_handler: None,
       })
     }
   }
