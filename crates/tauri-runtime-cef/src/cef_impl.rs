@@ -1078,6 +1078,19 @@ wrap_life_span_handler! {
   }
 }
 
+fn origin_from_url(url: &str) -> String {
+  match url::Url::parse(url) {
+    Ok(u) => match (u.scheme(), u.host_str()) {
+      (scheme, Some(host)) => match u.port() {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+      },
+      _ => String::new(),
+    },
+    Err(_) => String::new(),
+  }
+}
+
 wrap_client! {
   struct BrowserClient<T: UserEvent> {
     window_kind: WindowKind,
@@ -1089,6 +1102,7 @@ wrap_client! {
     address_changed_handler: Option<Arc<AddressChangedHandler>>,
     new_window_handler: Option<Arc<tauri_runtime::webview::NewWindowHandler<T, crate::CefRuntime<T>>>>,
     download_handler: Option<Arc<tauri_runtime::webview::DownloadHandler>>,
+    notification_handler: Option<Arc<tauri_runtime::webview::NotificationHandler>>,
     devtools_enabled: bool,
     custom_scheme_domain_names: Vec<String>,
     custom_protocol_scheme: String,
@@ -1097,6 +1111,50 @@ wrap_client! {
   }
 
   impl Client {
+    fn on_process_message_received(
+      &self,
+      _browser: Option<&mut Browser>,
+      frame: Option<&mut Frame>,
+      _source_process: ProcessId,
+      message: Option<&mut ProcessMessage>,
+    ) -> ::std::os::raw::c_int {
+      let Some(handler) = self.notification_handler.as_ref() else {
+        return 0;
+      };
+      let Some(message) = message else { return 0; };
+      let name = CefString::from(&message.name()).to_string();
+      if name != "openhuman.notification.show" {
+        return 0;
+      }
+      let Some(args) = message.argument_list() else { return 0; };
+      if args.size() < 6 {
+        return 0;
+      }
+      let read = |i: usize| -> Option<String> {
+        let s = CefString::from(&args.string(i)).to_string();
+        if s.is_empty() { None } else { Some(s) }
+      };
+      let title = read(0).unwrap_or_default();
+      let body = read(1);
+      let icon = read(2);
+      let tag = read(3);
+      let frame_url = read(4).unwrap_or_else(|| {
+        frame
+          .map(|f| CefString::from(&f.url()).to_string())
+          .unwrap_or_default()
+      });
+      let origin = read(5).unwrap_or_else(|| origin_from_url(&frame_url));
+      handler(tauri_runtime::webview::NotificationPayload {
+        title,
+        body,
+        icon,
+        tag,
+        origin,
+        frame_url,
+      });
+      1
+    }
+
     fn request_handler(&self) -> Option<RequestHandler> {
       Some(request_handler::WebRequestHandler::new(
         self.initialization_scripts.clone(),
@@ -3212,6 +3270,7 @@ fn create_browser_window<T: UserEvent>(
     web_resource_request_handler: _,
     mut on_page_load_handler,
     download_handler,
+    notification_handler,
   } = webview;
 
   let address_changed_handler = address_changed_handler
@@ -3281,6 +3340,7 @@ fn create_browser_window<T: UserEvent>(
     address_changed_handler,
     new_window_handler,
     download_handler,
+    notification_handler,
     devtools_enabled,
     custom_scheme_domain_names.clone(),
     custom_protocol_scheme.to_string(),
@@ -3648,6 +3708,7 @@ pub(crate) fn create_webview<T: UserEvent>(
     web_resource_request_handler: _,
     mut on_page_load_handler,
     download_handler,
+    notification_handler,
   } = pending;
 
   let address_changed_handler = address_changed_handler
@@ -3705,6 +3766,7 @@ pub(crate) fn create_webview<T: UserEvent>(
     address_changed_handler,
     new_window_handler,
     download_handler,
+    notification_handler,
     devtools_enabled,
     custom_scheme_domain_names.clone(),
     custom_protocol_scheme.to_string(),
