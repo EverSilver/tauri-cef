@@ -1174,6 +1174,15 @@ wrap_client! {
       Some(BrowserPermissionHandler::new())
     }
 
+    fn audio_handler(&self) -> Option<AudioHandler> {
+      // Only tap audio on Browser (webview account) windows, not on the main
+      // Tauri window — we have no reason to record the app's own UI audio.
+      if self.window_kind != WindowKind::Browser {
+        return None;
+      }
+      Some(BrowserAudioHandler::new())
+    }
+
     fn on_process_message_received(
       &self,
       browser: Option<&mut Browser>,
@@ -1229,6 +1238,71 @@ wrap_client! {
         },
       );
       1
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CEF Audio Handler — captures raw PCM audio from Browser windows for STT.
+//
+// CEF delivers audio in a planar f32 layout: `data[channel][frame]`.  We
+// downmix to mono inside `audio_tap::push_audio_data` and push the result to
+// per-browser mpsc channels consumed by the call-session transcription pipeline
+// in the Tauri shell (`webview_accounts::call_session`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+wrap_audio_handler! {
+  struct BrowserAudioHandler;
+
+  impl AudioHandler {
+    fn on_audio_stream_started(
+      &self,
+      browser: Option<&mut Browser>,
+      params: Option<&AudioParameters>,
+      channels: ::std::os::raw::c_int,
+    ) {
+      let browser_id = browser.map(|b| b.identifier()).unwrap_or(-1);
+      let (sample_rate, frames_per_buffer) = params
+        .map(|p| (p.sample_rate, p.frames_per_buffer))
+        .unwrap_or((48_000, 1024));
+      log::debug!(
+        "[audio-tap] stream_started browser_id={browser_id} sample_rate={sample_rate} channels={channels} frames_per_buffer={frames_per_buffer}"
+      );
+      crate::audio_tap_registry::register_audio_tap(browser_id, sample_rate, channels);
+    }
+
+    fn on_audio_stream_packet(
+      &self,
+      browser: Option<&mut Browser>,
+      data: *mut *const f32,
+      frames: ::std::os::raw::c_int,
+      _pts: i64,
+    ) {
+      let browser_id = browser.map(|b| b.identifier()).unwrap_or(-1);
+      // Retrieve the channel count from the tap state so we pass the right
+      // value to the downmix helper.
+      let channels = crate::audio_tap_registry::get_channels(browser_id).unwrap_or(2);
+      // SAFETY: `data` is provided by CEF and is valid for this call.
+      unsafe {
+        crate::audio_tap_registry::push_audio_data(browser_id, data, frames, channels);
+      }
+    }
+
+    fn on_audio_stream_stopped(&self, browser: Option<&mut Browser>) {
+      let browser_id = browser.map(|b| b.identifier()).unwrap_or(-1);
+      log::info!("[audio-tap] stream_stopped browser_id={browser_id}");
+      crate::audio_tap_registry::unregister_audio_tap(browser_id);
+    }
+
+    fn on_audio_stream_error(
+      &self,
+      browser: Option<&mut Browser>,
+      message: Option<&CefString>,
+    ) {
+      let browser_id = browser.map(|b| b.identifier()).unwrap_or(-1);
+      let msg = message.map(|m| m.to_string()).unwrap_or_default();
+      log::error!("[audio-tap] stream_error browser_id={browser_id} msg={msg:?}");
+      crate::audio_tap_registry::unregister_audio_tap(browser_id);
     }
   }
 }
