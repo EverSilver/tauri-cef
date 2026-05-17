@@ -4,6 +4,12 @@
 
 #![allow(clippy::arc_with_non_send_sync)]
 #![allow(clippy::too_many_arguments)]
+// Rust 2024 edition promoted `unsafe_op_in_unsafe_fn` from warn to deny by
+// default. The vendored CEF runtime fork was written for the 2021 edition
+// where calling unsafe Win32 / CEF FFI from inside an unsafe fn was implicit.
+// Allow it crate-wide so we don't have to wrap every `GetDeviceCaps`,
+// `Frame::data`, etc. callsite in a redundant unsafe block.
+#![allow(unsafe_op_in_unsafe_fn)]
 
 use cef::{CefString, ImplCommandLine, ImplTaskRunner};
 use tauri_runtime::{
